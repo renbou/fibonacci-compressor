@@ -1,0 +1,6 @@
+[submodule "src/dynamic_bitset"]
+	path = src/dynamic_bitset
+	url = https://github.com/pinam45/dynamic_bitset
+[submodule "src/intx"]
+	path = src/intx
+	url = https://github.com/chfast/intx
