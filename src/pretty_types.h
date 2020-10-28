@@ -6,7 +6,6 @@
 #define PHICC_PRETTY_TYPES_H
 
 #include <utility>
-#include <intx/intx.hpp>
 
 typedef uint64_t uint64;
 typedef int64_t int64;
@@ -19,9 +18,5 @@ typedef uint8_t byte;
 typedef int8_t sbyte;
 typedef int8_t int8;
 typedef std::size_t size_t;
-
-using uint128 = intx::uint128;
-using uint256 = intx::uint256;
-using uint512 = intx::uint512;
 
 #endif //PHICC_PRETTY_TYPES_H
