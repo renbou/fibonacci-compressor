@@ -1,6 +1,6 @@
 #include <iostream>
-#include <vector>
-#include <intx/intx.hpp>
+#include <array>
+#include <gcem.hpp>
 #include "pretty_types.h"
 
 /* the fibBase data type will be used as the main and maximum allowed data type for
@@ -17,196 +17,362 @@
  * making this larger, for example uint128, doesn't make sense, but I guess who will stop ya?
 */
 
-typedef uint64 fibBase;
-typedef uint32 fibBaseHalf;
-#define FIB_BASE_BITS 64
-static_assert(FIB_BASE_BITS == sizeof(fibBase) * 8, "preprocessor-time FIB_BASE_BITS isn't equal to compile-time fibBaseBits");
-static_assert(sizeof(fibBaseHalf) * 2 == sizeof(fibBase), "fibBaseHalf must be a type with 2 times less bits than fibBase");
+typedef uint16 fibBase;
 constexpr fibBase MAX_FIBBASE = std::numeric_limits<fibBase>::max();
-constexpr fibBase MAX_FIBBASEHALF = std::numeric_limits<fibBaseHalf>::max();
-// I couldn't figure out how to get the preprocessor to use compile-time constexpr values (makes sense I guess)
-// So in order for the compilation to work properly, if you change this to intx::uint128 or more, you should
-// Set FIB_BASE_BITS accordingly so that the appropriate constexpr functions will be used
+constexpr uint32 fibBaseBits = sizeof(fibBase) * 8;
 
+constexpr long double phi = (1.0L + gcem::sqrt(5.0L)) / 2.0L;
+constexpr long double Phi = 1.0L - phi;
 
-// constexpr function for counting the logarithm at compile time, taken from some old code of mine
-constexpr uint64 constexprLog2(uint64 n) {
-	return n <= 1 ? 0 : 1 + constexprLog2(n / 2);
+constexpr uint64 FastFibonacci(uint64 i) {
+	return (gcem::pow(phi, i) - gcem::pow(Phi, i)) / gcem::sqrt(5.0L);
 }
 
-// number of bits in the base, we add one to count for the 0'th
-constexpr uint64 fibBaseBits = sizeof(fibBase) * 8;
-constexpr uint64 fibBaseBitsPower = constexprLog2(fibBaseBits) + 1;
-
-/* This matrix type will always be the same size, only the data type might change
+/* Function that returns the index of the largest fibonacci number that's less than n
+ * (also the length of n encoded with fibonacci)
  *
- * Actually only used for fast fibonacci number calculation in log(n) using binary matrix exponentiation
+ * Can be derived using Binet's representation and the fact that (1 - phi)^n -> 0 as n -> inf
+ * And actually even from the first fibonacci numbers, it barely affects the value, and simply
+ * Rounding we get the correct fibonacci numbers. So instead (phi^n + (1 - phi)^n)/sqrt(5) we have
+ * Simply phi^n/sqrt(5) = ((1 + sqrt(5))/2)^n * 1/sqrt(5). Solving the inequality
+ * ((1 + sqrt(5))/2)^n * 1/sqrt(5) <= N where N is the function argument, we get n - the index
+ * of the largest fibonacci number that'll fit us i.e. be still smaller or equal to N.
+ *
+ * However because of this "rounding" we need to make a const table for small numbers, because
+ * they won't be found correctly by this formula
  */
-typedef std::array<std::array<fibBase, 2>, 2> matrix;
-
-/* Hacky constexpr function that we will use everywhere for multiplication
- * Needed because operator * for classes isn't constexpr, but of course the multiplication itself is
- */
-constexpr fibBase constexpr_multiply(const fibBase &a, const fibBase &b) {
-#if FIB_BASE_BITS <= 64
-	return a * b;
-#elif FIB_BASE_BITS == 128
-	return intx::constexpr_mul(a, b);
-#else
-	return intx::constexpr_mul<FIB_BASE_BITS>(a, b);
-#endif
+constexpr uint32 small_number_fitter[20] =
+	{0, 2, 3, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7};
+constexpr uint32 MaxFittingFibonacci(uint64 n) {
+		if (n < 20)
+			return small_number_fitter[n];
+		constexpr long double sqrt5 = gcem::sqrt(5.0L);
+		constexpr long double denominator = gcem::log(1.0L + sqrt5) - gcem::log(2.0L);
+		// add some epsilon to escape invalid answers for fibonacci numbers
+		// higher than the ones stored in the small fitter
+		return gcem::log(sqrt5 * static_cast<long double>(n)) / denominator + 0.001L;
 }
 
-/* Hacky constexpr functions that will get the lower and upper halves of the number, no matter the size
- * Needed because operator << for classes isn't constexpr
+/* Pretty much just a trunk for the last function, but handles 0 differently
+ * because the encoding of 0 is nothing (actually just the '1' which is placed after every code)
  */
-constexpr fibBaseHalf constexpr_lo(const fibBase &a) {
-#if FIB_BASE_BITS <= 64
-	return a & MAX_FIBBASEHALF;
-#else
-	return a.lo;
-#endif
+constexpr inline uint32 FibonacciEncodingLength(uint64 n) {
+	if (n != 0) [[likely]] {
+		return MaxFittingFibonacci(n) - 1;
+	}
+	return 0;
 }
 
-constexpr fibBaseHalf constexpr_hi(const fibBase &a) {
-#if FIB_BASE_BITS <= 64
-	return a >> (fibBaseBits / 2);
-#else
-	return a.hi;
-#endif
-}
-
-// Simple function which multiplies two 2-d matrices, trying to evaluate this value at compile time
-constexpr matrix MatrixMultiply(const matrix &a, const matrix &b) {
-	return matrix {
-		{{constexpr_multiply(a[0][0], b[0][0]) + constexpr_multiply(a[0][1], b[1][0]),
-			constexpr_multiply(a[0][0], b[0][1]) + constexpr_multiply(a[0][1], b[1][1])},
-   		{constexpr_multiply(a[1][0], b[0][0]) + constexpr_multiply(a[1][1], b[1][0]),
-	  		constexpr_multiply(a[1][0], b[0][1]) + constexpr_multiply(a[1][1], b[1][1])}}
-	};};
-
-//#if FIB_BASE_BITS <= 64
-//constexpr matrix MatrixMultiply(const matrix &a, const matrix &b) {
-//	return matrix {{{a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1]},
-//					   {a[1][0] * b[0][0] + a[1][1] * b[1][0], a[1][0] * b[0][1] + a[1][1] * b[1][1]}}};
-//}
-//#elif FIB_BASE_BITS == 128
-////constexpr matrix MatrixMultiply(const matrix &a, const matrix &b) {
-////	return matrix {
-////		{{intx::constexpr_mul(a[0][0], b[0][0]) + intx::constexpr_mul(a[0][1], b[1][0]),
-////			intx::constexpr_mul(a[0][0], b[0][1]) + intx::constexpr_mul(a[0][1], b[1][1])},
-////   		 {intx::constexpr_mul(a[1][0], b[0][0]) + intx::constexpr_mul(a[1][1], b[1][0]),
-////		 	intx::constexpr_mul(a[1][0], b[0][1]) + intx::constexpr_mul(a[1][1], b[1][1])}}};
-////}
-//#else
-//constexpr matrix MatrixMultiply(const matrix &a, const matrix &b) {
-//	return matrix {
-//		{{intx::constexpr_mul<FIB_BASE_BITS>(a[0][0], b[0][0]) + intx::constexpr_mul<FIB_BASE_BITS>(a[0][1], b[1][0]),
-//			intx::constexpr_mul<FIB_BASE_BITS>(a[0][0], b[0][1]) + intx::constexpr_mul<FIB_BASE_BITS>(a[0][1], b[1][1])},
-//   		 {intx::constexpr_mul<FIB_BASE_BITS>(a[1][0], b[0][0]) + intx::constexpr_mul<FIB_BASE_BITS>(a[1][1], b[1][0]),
-//		 	intx::constexpr_mul<FIB_BASE_BITS>(a[1][0], b[0][1]) + intx::constexpr_mul<FIB_BASE_BITS>(a[1][1], b[1][1])}}};
-//}
-//#endif
-
-// Function which calculates the first n matrix powers in the form 2^i
-// (so base_matrix^1, base_matrix^2, base_matrix^4, ...)
+/* Build precomputed at compile time fibonacci table of size n
+ *
+ * We later use this in order to build the base encoding table for small values
+ * As well as for simply converting small numbers to fibonacci encoding
+ */
 template <size_t n>
-constexpr std::array<matrix, n> CalculateMatrixPowers(const matrix& base_matrix) {
-	std::array<matrix, n> result = {base_matrix};
-	// Use matrix multiplication to calculate the matrices, storing them by rvalue reference
-	for (uint32 i = 1; i < n; i++) {
-		result[i] = MatrixMultiply(result[i-1], result[i-1]);
-	}
+constexpr std::array<fibBase, n> BuildPrecomputedTable() {
+	std::array<fibBase, n> result = {1};
+	if (n > 1)
+		result[1] = 2;
+	for (uint32 i = 2; i < n; i++)
+		result[i] = result[i - 1] + result[i - 2];
 	return result;
 }
 
-// The base fibonacci matrix, this is used for all later calculations
-static constexpr matrix fibonacci_matrix = {{{1, 1}, {1, 0}}};
-constexpr std::array<matrix, fibBaseBitsPower> first_fibmatrix_powers = CalculateMatrixPowers<fibBaseBitsPower>(fibonacci_matrix);
-// Simply get the actual values from the matrices, we save the matrices
-// In case we later need them for fast fibonacci calculation
-constexpr std::array<fibBase, fibBaseBitsPower> first_fibonacci_powers = [](){
-	std::array<fibBase, fibBaseBitsPower> result = {first_fibmatrix_powers[0][0][1]};
-	for (uint32 i = 0; i < fibBaseBitsPower; i++) {
-		result[i] = first_fibmatrix_powers[i][0][1];
-	}
-	return result;
-}();
+// Length of the maximum code we can get, we only use up to uint64 so this will be enough for everything
+// We will store the codes simply as bitsets, because there's no point in making some smart structure for them
+// The overhead would just be too much, comparing to storing around 12 bytes
+constexpr uint32 max_needed_fibonacci_index = MaxFittingFibonacci(std::numeric_limits<uint64>::max());
 
-constexpr bool WillOverflow(fibBase a, fibBase b) {
-	if (a > b) {
-		fibBase tmp = std::move(a);
-		a = std::move(b);
-		b = std::move(tmp);
-	}
-	if (a > MAX_FIBBASEHALF)
-		return true;
-	fibBaseHalf c = constexpr_hi(b);
-	if (constexpr_multiply(a, c) > MAX_FIBBASEHALF)
-		return true;
-	return false;
-}
+// We store the index of the maximum usable fibonacci number here, i.e. 16
+// in the case of using an int16 as the base type. This is due to the fact that we encode
+// the numbers in blocks of this size, and it is more optimal to store tables with sizes equal to
+// some power of 2 than something like 25, which we would get if we stored numbers up to the maximal needed.
+constexpr uint32 fibonacci_block_size = fibBaseBits;
 
-constexpr bool MatrixRowMultWillOverflow(fibBase row1, fibBase row2, fibBase col1, fibBase col2) {
-	return WillOverflow(row1, col1) || WillOverflow(row2, col2) ||
-		(constexpr_multiply(row1, col1) + constexpr_multiply(row2, col2)) < constexpr_multiply(row1, col1);
-}
+// The amount of blocks we need to encode the largest number if we use fibBase for storing all blocks
+constexpr uint32 fibonacci_blocks_needed = (max_needed_fibonacci_index + fibonacci_block_size - 1) / fibonacci_block_size;
 
-/* Function that returns the index of the maximum fibonacci number which is less than n
- * We use this in order to construct a basic table of fibonacci numbers
- *
- * In order to search for the fibonacci number, we greedily take the largest one we can
- * on every step, what this means is we try to multiply the previously gotten result (on the last step)
- * by a possible matrix, getting the prev_power+i'th fibonacci number. If the fibonacci number overflows
- * or is greater than what we need, we continue searching.
+/* Build a precomputed table with enough size to hold all fibonacci numbers that are less
+ * than the maximum number representable by our base type
  */
-constexpr uint64 MaxFittingFibonacci(fibBase n) {
-	// initialize result as identity matrix for the first round
-	matrix result = {{{1, 0}, {0, 1}}};
-	int64 i = fibBaseBitsPower, result_i = 0;
-	// variable to mark that the next fibonacci number has been overflown
-	bool end_is_near = false;
-	while (i > 0 && !end_is_near) {
-		// search for the next item using binary search, this is just in order to optimize out lots of the matrix multiplicationss
-		int64 left = 0, right = i - 1;
-		while (left <= right) {
-			int64 mid = (left + right) >> 1;
 
-			// If we have overflown, then there's no point in doing anything else
-			if (MatrixRowMultWillOverflow(result[0][0], result[0][1], first_fibmatrix_powers[mid][0][1], first_fibmatrix_powers[mid][1][1]))
-				right = mid - 1;
-			// separate this case for optimization, we don't need to multiply if we overflow anyway
-			else if (MatrixMultiply(result, first_fibmatrix_powers[mid])[0][1] > n)
-				right = mid - 1;
+// Since we actually don't separate fibonacci(1) and fibonacci(2) (they are both equal to 1), we need to add 1,
+// and because using n bits we can encode all numbers up to fibonacci(n+1), we add another 1 and get the next number after
+// the largest number which we can encode using n bits (fibonacci_block_size bits in our case)
+constexpr uint64 precalc_table_limit = FastFibonacci(fibonacci_block_size + 2);
+constexpr std::array<fibBase, fibonacci_block_size> precalc_fibonacci_table = BuildPrecomputedTable<fibonacci_block_size>();
+
+/* Lightweight class for storing a bitset of fixed size.
+ *
+ * This stores the bits in the order which is defined by the system (so for ex. on a little endian system this would store
+ * little-endian numbers, specifically little-endian int16's by default, and with big-endian in each byte, since that is default).
+ * Of course, this won't correspond to the encoding, but what matters is actually how we interpret the bytes, and because
+ * we read and write them all in the same way, this should be perfectly fine. As an addition, writing and reading this way
+ * lets us write cleaner code.
+ *
+ * It's easy to change this to a template class, but currently there's no need, cause we have a constant
+ * maximum code length, and the overhead of a more complex class is bigger than just storing the extra bytes
+ */
+struct LightBitset {
+	protected:
+		// the max length is the index of the maximum fibonacci number we can use, rounded up to the block size
+		static constexpr uint32 BLOCKS = fibonacci_blocks_needed;
+		// the size of the block, it makes sense to use fibBase size for it in order for it to properly fit into the whole project
+		// also this means that we can copy bits by blocks without even having to worry about overlapping or whatever (when constructing the fib encoding)
+		static constexpr uint32 BLOCKSIZE = fibonacci_block_size;
+		// For less time consuming operations (because otherwise there's a lot of useless division if we don't Ofast)
+		static constexpr uint32 BLOCKSIZE_SHIFT = gcem::round(gcem::log2(BLOCKSIZE));
+		static constexpr uint32 BLOCKSIZE_MASK = BLOCKSIZE - 1;
+	public:
+		fibBase bits_[BLOCKS];
+		uint8 max_index_;
+
+		constexpr LightBitset() {
+			max_index_ = 0;
+			Clear();
+		}
+
+		~LightBitset() = default;
+
+		/* Basic functions for manipulating instances of this class */
+
+		constexpr void Set(uint8 index) {
+			bits_[(index >> BLOCKSIZE_SHIFT)] |= (1 << (index & BLOCKSIZE_MASK));
+			if (index + 1 > max_index_)
+				max_index_ = index + 1;
+		}
+
+		constexpr void SetBlock(uint8 block_index, fibBase block) {
+			bits_[block_index] = block;
+		}
+
+		constexpr bool Get(uint8 index) const {
+			return (bits_[(index >> BLOCKSIZE_SHIFT)] &  (1 << (index & BLOCKSIZE_MASK))) != 0;
+		}
+
+		constexpr fibBase GetBlock(uint8 block_index) {
+			return bits_[block_index];
+		}
+
+		constexpr void Clear() {
+			for (uint32 i = 0; i < BLOCKS; i++)
+				bits_[i] = 0;
+		}
+
+		/* Function for merging this bitset with another one
+		 *
+		 * Pretty much just sets all the bits present in the other bitset
+		 * Merges by block, not by bit. This is correct even if the last block in the other bitset
+		 * isn't completely filled, because in that case the values will be 0 anyways
+		 *
+		 * destIndex specifies where to start putting the blocks from other into the current bitset
+		 */
+		constexpr void MergeWith(const LightBitset &other, const uint8 destIndex) {
+			for (uint32 i = 0; i < ((other.max_index_ + BLOCKSIZE_MASK - 1) >> BLOCKSIZE_SHIFT); i++) {
+				#ifdef DEBUG
+				if (i + destIndex > BLOCKS) {
+					puts("INVALID MERGING OF BLOCKS");
+					exit(-1);
+				}
+				#endif
+				bits_[i + destIndex] = (bits_[i + destIndex] | other.bits_[i]);
+			}
+			if (other.max_index_ + destIndex * BLOCKSIZE > max_index_)
+				max_index_ = other.max_index_ + destIndex * BLOCKSIZE;
+		}
+};
+
+/* Function for converting small numbers (up to MAX_FIBBASE) relatively easily
+ *
+ * This WILL NOT encode larger numbers correctly, because it uses the precomputed fibonacci number table
+ * where all the numbers are lower than MAX_FIBBASE. This function should not be used to build large
+ * consecutive tables, because you would have to encode every number using it, resulting in
+ * O(n * log(precalc_table_size)) which is technically O(n) but much more inefficient
+ */
+constexpr LightBitset EncodeSmallNumber(fibBase n) {
+	LightBitset result;
+	int32 last = fibonacci_block_size;
+	while (n > 0) {
+		int left = 0, right = last;
+		while (left < right) {
+			int64 mid = (left + right) >> 1;
+			if (precalc_fibonacci_table[mid] > n)
+				right = mid;
 			else
 				left = mid + 1;
 		}
-
-		// found a suitable item
-		i = right;
-		if (right >= 0) {
-			// we have to check that if the next fibonacci number (in matrix it's at index 0,0) will be overflown during calculations,
-			// then this is the end, and after this we have to stop
-			end_is_near = MatrixRowMultWillOverflow(result[0][0], result[0][1], first_fibmatrix_powers[i][0][0], first_fibmatrix_powers[i][1][0]);
-
-			result = MatrixMultiply(result, first_fibmatrix_powers[i]);
-			result_i += (1 << i);
-		}
+		last = right;
+		n -= precalc_fibonacci_table[right - 1];
+		result.Set(right - 1);
 	}
-	return result_i;
+	return result;
 }
 
-uint64 precount_table_size = MaxFittingFibonacci(MAX_FIBBASE);
+/* This generates a code table for small numbers (lower than MAX_FIBBASE)
+ *
+ * Actually this can be calculated more efficiently if we take into account the fact
+ * that we can use our previous results for encoding the next numbers:
+ * 0 is ''
+ * 1 is '1'
+ * 2 is '01'
+ * 3 is '001'
+ * 4 is '101'
+ * 5 is '0001'
+ * 6 is '1001'
+ * 7 is '0101'
+ * 8 is '00001' and so on...
+ * As you can see, we can encode all the numbers which have i'th fib. number as the maximum fitting fib number
+ * by using all the previously encoded number UP UNTIL the previous fib. number (so for encoding numbers which
+ * have 5 as max fitting fib. number, we use 1, 2, because 3 was previous fib number and we skip it, and we get
+ * the encodings for 6 and 7) and then just append a '1' to the end, signifying this number. This can be easily
+ * used to encode numbers in clear O(n) instead of amortized O(n) (which is due to using up lots of floating-point
+ * arithmetic).
+ * And since we even have a precalc'd table, we can do this really quite fast and get a quickly-compiling constexpr table.
+ *
+ * However it doesn't matter for now, so currently it just uses the simple encoding algorithm.
+ */
+template<size_t n>
+constexpr std::array<LightBitset, n> GenerateCodeTable() {
+	std::array<LightBitset, n> result = {};
+	for (fibBase i = 0; i < n; i++) {
+		result[i] = EncodeSmallNumber(i);
+	}
+	return result;
+}
+
+constexpr std::array<LightBitset, precalc_table_limit> precalc_code_table = GenerateCodeTable<precalc_table_limit>();
+
+// We have our one main table which stores all codes for numbers which can be written using fibBaseBits in fibonacci encoding,
+// so we need to store a conversion table for the rest of the blocks, which we will use to quickly calculate correct shifts
+// and encodings for the numbers in that range.
+constexpr uint32 extra_fibonacci_blocks_needed = fibonacci_blocks_needed - 1;
+
+/* Function which generates a "shift table" which we used for fast fibonacci encoding
+ * The size of the table is m*n, where m is the number of extra blocks needed (number of total blocks - 1)
+ * and m is the maximum number we can encode using fibonacci_block_size bits with fibonacci encoding.
+ * The only data we actually store here is the range in which any number shifted by k*block_size "fibonacci bits"
+ * would result in the number i (so pretty much [k][i] is a pair).
+ */
+template<size_t n, size_t m>
+constexpr std::array<
+	std::array<std::pair<uint64, uint64>, n>,
+	m> MakeFibonacciShiftTable() {
+		std::array<
+			std::array<std::pair<uint64, uint64>, n>,
+			m> result = {};
+		// Create a table of mins and maxs for every shift (k*fibonacci_block_size)
+		for (uint32 k = 0; k < m; k++) {
+			// The fibonacci number which was the largest in the previous block
+			uint64 previous_maximum = FastFibonacci((k + 1) * fibonacci_block_size + 1);
+			// The fibonacci number which is the bare minimum for the current block
+			uint64 current_minimum = FastFibonacci((k + 1) * fibonacci_block_size + 2);
+
+			// We can't get a 0 because before shifting that the number actually needs to be shifted, i.e.
+			// it is bigger than current_minimum. From here on the maximum value for current i is calculated
+			// as the minimum + current_minimum - 1 if the result of the shift doesn't have the first bit set
+			// (which would mean that we can take current_minimum - 1 extra numbers, starting with
+			// fibonacci((k + 1) * fib_block_size - 1)), so the previous largest number and then all the ones lower than it
+			// (which gives us the maximum value current_minimum - 1), however if it DOES have the first bit set,
+			// then we add previous_maximum + 1, which corresponds to us not being to make current_minimum - 1 from the previous
+			// bits, since we can't take the number previous_maximum, so we can actually make only previous_maximum - 1
+			result[k][1].first = current_minimum;
+			result[k][1].second = current_minimum + previous_maximum - 1;
+
+			for (uint32 i = 2; i < n; i++) {
+				result[k][i].first = result[k][i - 1].second + 1;
+				result[k][i].second = result[k][i].first + (precalc_code_table[i].Get(0) ? previous_maximum : current_minimum) - 1;
+			}
+		}
+		return result;
+	}
+
+// Table which stores all the necessary information for calculating the encoding of a number by shifting it's fibonacci
+// representation. As it turns out, there's only use in storing the minimum and maximum number for which the result
+// of the k*fibBaseBits'th shift is equal to the resulting number. As, during the calculation of the shift, we can get
+// an inconsistency in the interval [0, 1], we first round and check if the number if it fits, and if it doesn't - subtract 1
+// from it and get the actual proper representation.
+constexpr std::array<
+    std::array<std::pair<uint64, uint64>, precalc_table_limit>,
+    extra_fibonacci_blocks_needed> fibonacci_shift_table =
+    	MakeFibonacciShiftTable<precalc_table_limit, extra_fibonacci_blocks_needed>();
+
+template <size_t n>
+constexpr std::array<long double, n> GenerateRequiredPhiShifts() {
+	std::array<long double, n> result = {};
+	for (uint32 i = 0; i < n; i++) {
+		result[i] = gcem::pow(phi, (i + 1) * fibonacci_block_size);
+	}
+	return result;
+}
+
+constexpr std::array<long double, extra_fibonacci_blocks_needed> golden_ratio_shift_powers =
+	GenerateRequiredPhiShifts<extra_fibonacci_blocks_needed>();
+
+constexpr LightBitset EncodeNumber(uint64 n) {
+	if (n < precalc_table_limit)
+		return precalc_code_table[n];
+	LightBitset result;
+	for (int32 i = extra_fibonacci_blocks_needed - 1; i >= 0; i--) {
+		if (n >= fibonacci_shift_table[i][1].first) {
+			uint64 current = gcem::round(static_cast<long double>(n) / golden_ratio_shift_powers[i]);
+			if (n < fibonacci_shift_table[i][current].first) {
+				current--;
+			}
+			#ifdef DEBUG
+			// simple check for debuggind, second if case is for the numbers which are so close to 2^64 that the right side has overflow,
+			// which wouldn't matter in the case of actual encoding, but could mess up the if logic here
+			if (!(fibonacci_shift_table[i][current].first <= n && fibonacci_shift_table[i][current].second >= n) &&
+					!(fibonacci_shift_table[i][current].second < fibonacci_shift_table[i][current].first)) {
+				printf("INVALID ENCODING OF NUMBER %llu\n", n);
+				exit(-1);
+			}
+			#endif
+			n -= fibonacci_shift_table[i][current].first;
+			result.MergeWith(precalc_code_table[current], i + 1);
+		}
+	}
+
+	#ifdef DEBUG
+	if (n >= precalc_table_limit) {
+		printf("INVALID NUMBER %llu AS A RESULT OF DOING SHIFTS, CAN'T ENCODE\n", n);
+		exit(-1);
+	}
+	#endif
+
+	if (n > 0) {
+		result.MergeWith(precalc_code_table[n], 0);
+	}
+
+	return result;
+}
 
 int main() {
-//	for (uint32 i = 0; i < fibBaseBitsPower; i++) {
-//		std::cout << intx::to_string(first_fibmatrix_powers[i][0][0]) << " " << intx::to_string(first_fibmatrix_powers[i][0][1]) << "\n" <<
-//			intx::to_string(first_fibmatrix_powers[i][1][0]) << " " << intx::to_string(first_fibmatrix_powers[i][1][1]) << std::endl;
-//	}
-	std::cout << MaxFittingFibonacci(MAX_FIBBASE) << std::endl;
-	for (uint32 i = 0; i < fibBaseBitsPower; i++) {
-		std::cout << first_fibmatrix_powers[i][0][0] << " " << first_fibmatrix_powers[i][0][1] << "\n" <<
-			first_fibmatrix_powers[i][1][0] << " " << first_fibmatrix_powers[i][1][1] << std::endl;
+	LightBitset encoded = EncodeNumber(2178309);
+	for (uint32 j = 0; j < encoded.max_index_; j++) {
+		std::cout << (encoded.Get(j) ? '1' : '0');
 	}
+	std::cout << '1' << std::endl;
+
+	std::cout << fibonacci_block_size << " " << fibonacci_blocks_needed << std::endl;
+	std::cout << precalc_table_limit << std::endl;
+
+	for (uint32 i = 0; i < fibonacci_block_size; i++) {
+		std::cout << i << ": " << precalc_fibonacci_table[i] << std::endl;
+	}
+//	while (true) {
+//		int i;
+//		std::cin >> i;
+//		std::cout << MaxFittingFibonacci(i) << " " << FibonacciEncodingLength(i) << std::endl;
+//	}
+
+	for (uint32 i = 0; i < 150; i++) {
+		LightBitset encoded = precalc_code_table[i];
+		std::cout << i << " ";
+		for (uint32 j = 0; j < encoded.max_index_; j++) {
+			std::cout << (encoded.Get(j) ? '1' : '0');
+		}
+		std::cout << '1' << std::endl;
+	}
+
 	return 0;
 }
